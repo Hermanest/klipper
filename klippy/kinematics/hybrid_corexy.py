@@ -11,13 +11,20 @@ from . import idex_modes
 class HybridCoreXYKinematics:
     def __init__(self, toolhead, config):
         self.printer = config.get_printer()
+        # Optional inversion of the hybrid-corexy geometry
+        self.inverted = False
+        if config.has_section('hybrid_corexy'):
+            hcxy_config = config.getsection('hybrid_corexy')
+            self.inverted = hcxy_config.getboolean('inverted', False)
         # itersolve parameters
         self.rails = [ stepper.LookupRail(config.getsection('stepper_x')),
                        stepper.LookupMultiRail(config.getsection('stepper_y')),
                        stepper.LookupMultiRail(config.getsection('stepper_z'))]
         self.rails[1].get_endstops()[0][0].add_stepper(
             self.rails[0].get_steppers()[0])
-        self.rails[0].setup_itersolve('corexy_stepper_alloc', b'-')
+        # For hybrid-corexy, flip the X stepper sign if inverted
+        self.rails[0].setup_itersolve('corexy_stepper_alloc',
+                                      b'+' if self.inverted else b'-')
         self.rails[1].setup_itersolve('cartesian_stepper_alloc', b'y')
         self.rails[2].setup_itersolve('cartesian_stepper_alloc', b'z')
         ranges = [r.get_range() for r in self.rails]
@@ -32,7 +39,9 @@ class HybridCoreXYKinematics:
             self.rails.append(stepper.LookupRail(dc_config))
             self.rails[1].get_endstops()[0][0].add_stepper(
                 self.rails[3].get_steppers()[0])
-            self.rails[3].setup_itersolve('corexy_stepper_alloc', b'+')
+            # Second carriage uses opposite sign
+            self.rails[3].setup_itersolve('corexy_stepper_alloc',
+                                          b'-' if self.inverted else b'+')
             self.dc_module = idex_modes.DualCarriages(
                     self.printer, [self.rails[0]], [self.rails[3]], axes=[0],
                     safe_dist=dc_config.getfloat(
@@ -53,9 +62,17 @@ class HybridCoreXYKinematics:
         pos = [stepper_positions[rail.get_name()] for rail in self.rails]
         if (self.dc_module is not None and 'PRIMARY' == \
                     self.dc_module.get_status()['carriage_1']):
-            return [pos[3] - pos[1], pos[1], pos[2]]
+            # With dual carriage active, X = X_dc +/- Y depending on inversion
+            if not self.inverted:
+                return [pos[3] - pos[1], pos[1], pos[2]]
+            else:
+                return [pos[3] + pos[1], pos[1], pos[2]]
         else:
-            return [pos[0] + pos[1], pos[1], pos[2]]
+            # Normal case, X = X +/- Y depending on inversion
+            if not self.inverted:
+                return [pos[0] + pos[1], pos[1], pos[2]]
+            else:
+                return [pos[0] - pos[1], pos[1], pos[2]]
     def update_limits(self, i, range):
         l, h = self.limits[i]
         # Only update limits if this axis was already homed,
